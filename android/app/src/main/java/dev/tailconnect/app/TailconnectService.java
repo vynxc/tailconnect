@@ -64,6 +64,11 @@ public class TailconnectService extends Service {
         String prefix = Net.activeLanPrefix(this);
         File bin = new File(getApplicationInfo().nativeLibraryDir, "libtailconnect.so");
         if (!bin.canExecute()) {
+            // Most package managers extract native libraries executable. If
+            // this one did not, try once before giving up.
+            bin.setExecutable(true, false);
+        }
+        if (!bin.canExecute()) {
             fail("Bundled server is not executable");
             return START_NOT_STICKY;
         }
