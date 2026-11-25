@@ -41,6 +41,21 @@ TAILCONNECT_CODE=ABCD-EFGH-JKMNP tailconnect agent --name "$(hostname)" --socks 
 Keep this process alive for the duration of the task. Never log, echo, commit,
 or paste the code into a public place.
 
+If the user wants this to survive restarts, save the code once:
+
+```bash
+tailconnect save ABCD-EFGH-JKMN3
+```
+
+Then future runs can omit `--code`:
+
+```bash
+tailconnect agent --name "$(hostname)" --socks 127.0.0.1:1080
+```
+
+`tailconnect forget` removes the saved code. The phone app's persistent-code
+option must also be enabled for the same code to survive phone service restarts.
+
 ## Automatic context
 
 As soon as the agent connects, the phone sends its model, network, LAN prefix,
@@ -123,7 +138,8 @@ service IDs you advertised; it cannot make the agent dial arbitrary targets.
 ## Stop
 
 Stop the background `tailconnect agent` process. Stopping the phone-side service
-also invalidates the code and keys.
+invalidates an ephemeral code. If the phone uses a persistent code, press
+**Rotate** in the app to invalidate it as well.
 
 ## Safety
 

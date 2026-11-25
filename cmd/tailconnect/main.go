@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -22,7 +23,7 @@ import (
 	"github.com/vynxc/tailconnect/internal/protocol"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 func main() {
 	log.SetFlags(0)
@@ -37,6 +38,10 @@ func main() {
 		agent(os.Args[2:])
 	case "parse":
 		parse(os.Args[2:])
+	case "save":
+		save(os.Args[2:])
+	case "forget":
+		forget(os.Args[2:])
 	case "version", "--version", "-version":
 		fmt.Printf("tailconnect %s %s/%s\n", version, runtime.GOOS, runtime.GOARCH)
 	case "help", "-h", "--help":
@@ -53,6 +58,7 @@ func usage() {
 
   tailconnect serve [flags]
       Run the phone-side tunnel server on this machine and print a code.
+      --code reuses a persistent code; --secret only sets its secret.
       The Android app runs the same server; this command is for testing and
       for using a Linux/Android device as the network gateway.
 
@@ -62,6 +68,12 @@ func usage() {
 
   tailconnect parse CODE
       Normalize a code and print its link and DERP residue.
+
+  tailconnect save CODE
+      Save a code so tailconnect agent can reconnect without --code.
+
+  tailconnect forget
+      Remove the saved code.
 
 Examples:
   tailconnect serve --allow 192.168.1.0/24
@@ -77,6 +89,7 @@ Examples:
 func serve(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	secret := fs.String("secret", "", "12-character secret; empty generates one")
+	code := fs.String("code", "", "persistent pairing code to reuse across server restarts")
 	allow := &stringList{}
 	fs.Var(allow, "allow", "private IPv4 LAN prefix or address to share (repeatable, comma-separated)")
 	allowLoopback := fs.Bool("allow-loopback", false, "also allow the phone-side localhost (dangerous)")
@@ -127,6 +140,7 @@ func serve(args []string) {
 	var jsonMu sync.Mutex
 	srv, err := link.StartServer(ctx, link.ServerConfig{
 		Secret:      *secret,
+		Code:        *code,
 		Policy:      policy,
 		ControlPort: uint16(*controlPort),
 		Verbose:     *verbose,
@@ -187,6 +201,7 @@ func agent(args []string) {
 	name := fs.String("name", "", "agent name shown on the phone")
 	socks := fs.String("socks", "", "local SOCKS5 listen address, e.g. 127.0.0.1:1080")
 	noAutoADB := fs.Bool("no-auto-adb", false, "do not create local forwards for discovered wireless-debugging endpoints")
+	saveCode := fs.Bool("save", false, "save the code for future reconnects")
 	expose := &stringList{}
 	forward := &stringList{}
 	fs.Var(expose, "expose", "id=host:port service to publish to the phone (repeatable)")
@@ -199,12 +214,24 @@ func agent(args []string) {
 		*code = os.Getenv("TAILCONNECT_CODE")
 	}
 	if *code == "" {
-		fatal(fmt.Errorf("--code or TAILCONNECT_CODE is required"))
+		if saved, err := loadSavedCode(); err == nil && saved != "" {
+			*code = saved
+			fmt.Fprintln(os.Stderr, "using saved pairing code")
+		}
+	}
+	if *code == "" {
+		fatal(fmt.Errorf("--code, TAILCONNECT_CODE, or `tailconnect save CODE` is required"))
 	}
 
 	parsed, err := paircode.ParseLink(*code)
 	if err != nil {
 		fatal(err)
+	}
+	if *saveCode {
+		if err := savePairingCode(parsed.Code); err != nil {
+			fatal(err)
+		}
+		fmt.Fprintf(os.Stderr, "saved pairing code to %s\n", savedCodePathForDisplay())
 	}
 	exposes, err := parseExposes(expose.values)
 	if err != nil {
@@ -315,6 +342,98 @@ func printContext(ctx protocol.PhoneContext, adb []link.ADBForward) {
 			fmt.Printf("  %-28s %-22s %s:%d\n", svc.Name, svc.Type, svc.Host, svc.Port)
 		}
 	}
+}
+
+func save(args []string) {
+	if len(args) != 1 {
+		fatal(fmt.Errorf("usage: tailconnect save CODE"))
+	}
+	p, err := paircode.ParseLink(args[0])
+	if err != nil {
+		fatal(err)
+	}
+	if err := savePairingCode(p.Code); err != nil {
+		fatal(err)
+	}
+	fmt.Printf("saved %s\n", paircode.Format(p.Code))
+	fmt.Printf("path: %s\n", savedCodePathForDisplay())
+}
+
+func forget(args []string) {
+	if len(args) != 0 {
+		fatal(fmt.Errorf("usage: tailconnect forget"))
+	}
+	if err := forgetPairingCode(); err != nil {
+		fatal(err)
+	}
+	fmt.Println("saved pairing code removed")
+}
+
+func savedCodePath() (string, error) {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "tailconnect", "pair.json"), nil
+}
+
+func savedCodePathForDisplay() string {
+	p, err := savedCodePath()
+	if err != nil {
+		return "(unknown)"
+	}
+	return p
+}
+
+type savedPairing struct {
+	Code string `json:"code"`
+}
+
+func savePairingCode(code string) error {
+	path, err := savedCodePath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	b, err := json.Marshal(savedPairing{Code: paircode.Format(code)})
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(b, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func loadSavedCode() (string, error) {
+	path, err := savedCodePath()
+	if err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var s savedPairing
+	if err := json.Unmarshal(b, &s); err != nil {
+		return "", err
+	}
+	return s.Code, nil
+}
+
+func forgetPairingCode() error {
+	path, err := savedCodePath()
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func parse(args []string) {

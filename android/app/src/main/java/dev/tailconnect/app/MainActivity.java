@@ -11,6 +11,8 @@ import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowManager;
@@ -40,6 +42,8 @@ public class MainActivity extends AppCompatActivity implements TailconnectState.
     private MaterialButton startButton;
     private MaterialButton stopButton;
     private MaterialCheckBox loopback;
+    private MaterialCheckBox persistent;
+    private TextView codeLabel;
     private String serviceSignature = "";
 
     @Override
@@ -88,7 +92,8 @@ public class MainActivity extends AppCompatActivity implements TailconnectState.
         statusCard.addView(statusView);
         root.addView(statusCard, matchWrap());
 
-        root.addView(label("PAIR CODE", dp(20)));
+        codeLabel = label("PAIR CODE", dp(20));
+        root.addView(codeLabel);
 
         MaterialCardView codeCard = card();
         LinearLayout codeBody = cardBody(codeCard, dp(18));
@@ -111,6 +116,9 @@ public class MainActivity extends AppCompatActivity implements TailconnectState.
         MaterialButton share = button("Share link", false);
         share.setOnClickListener(v -> shareCode());
         codeActions.addView(share, weight());
+        MaterialButton rotate = button("Rotate", false);
+        rotate.setOnClickListener(v -> rotateCode());
+        codeActions.addView(rotate, weight());
         codeBody.addView(codeActions);
         root.addView(codeCard, matchWrap());
 
@@ -131,6 +139,18 @@ public class MainActivity extends AppCompatActivity implements TailconnectState.
         loopback.setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant));
         loopback.setPadding(0, dp(6), 0, dp(6));
         root.addView(loopback);
+
+        persistent = new MaterialCheckBox(this);
+        persistent.setText("Keep this code across restarts (long-lived credential)");
+        persistent.setTextSize(14);
+        persistent.setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant));
+        persistent.setChecked(CodeStore.isEnabled(this));
+        persistent.setPadding(0, dp(2), 0, dp(6));
+        persistent.setOnCheckedChangeListener((b, checked) -> {
+            CodeStore.setEnabled(this, checked);
+            updateCodeLabel();
+        });
+        root.addView(persistent);
 
         root.addView(label("PHONE NETWORK", dp(20)));
         MaterialCardView networkCard = card();
@@ -159,6 +179,7 @@ public class MainActivity extends AppCompatActivity implements TailconnectState.
                 12, Typeface.DEFAULT, color(com.google.android.material.R.attr.colorOnSurfaceVariant));
         footer.setPadding(0, dp(28), 0, 0);
         root.addView(footer);
+        updateCodeLabel();
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -251,9 +272,28 @@ public class MainActivity extends AppCompatActivity implements TailconnectState.
         return Color.WHITE;
     }
 
+    private void updateCodeLabel() {
+        if (codeLabel == null || persistent == null) return;
+        codeLabel.setText(persistent.isChecked() ? "PAIR CODE · PERSISTENT" : "PAIR CODE · SESSION");
+    }
+
+    private void rotateCode() {
+        boolean wasRunning = TailconnectState.get().running;
+        CodeStore.clear(this);
+        TailconnectState.set(TailconnectState.Snapshot.empty());
+        stopService(new Intent(this, TailconnectService.class));
+        if (wasRunning) {
+            new Handler(Looper.getMainLooper()).postDelayed(this::startTunnel, 800);
+        } else {
+            Toast.makeText(this, "Next start will use a new code", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private void startTunnel() {
+        CodeStore.setEnabled(this, persistent.isChecked());
         Intent i = new Intent(this, TailconnectService.class);
         i.putExtra(TailconnectService.EXTRA_LOOPBACK, loopback.isChecked());
+        i.putExtra(TailconnectService.EXTRA_PERSISTENT, persistent.isChecked());
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
         else startService(i);
         Toast.makeText(this, "Starting…", Toast.LENGTH_SHORT).show();
@@ -307,6 +347,8 @@ public class MainActivity extends AppCompatActivity implements TailconnectState.
         startButton.setEnabled(!s.running);
         stopButton.setEnabled(s.running);
         loopback.setEnabled(!s.running);
+        persistent.setEnabled(!s.running);
+        updateCodeLabel();
 
         StringBuilder sig = new StringBuilder();
         for (TailconnectState.Service svc : s.services) {

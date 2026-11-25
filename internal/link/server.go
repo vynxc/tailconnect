@@ -64,6 +64,10 @@ type ServerConfig struct {
 	// Secret is the 12-character part of the code. If empty, one is generated.
 	Secret string
 
+	// Code is a complete persisted pairing code. When set, its secret and
+	// region residue are reused so the same human code survives restarts.
+	Code string
+
 	// Policy is the private IPv4 allowlist for agent -> phone LAN traffic.
 	Policy Policy
 
@@ -133,6 +137,15 @@ func StartServer(parent context.Context, cfg ServerConfig) (*Server, error) {
 		logf = log.Printf
 	}
 	secret := strings.ToUpper(strings.TrimSpace(cfg.Secret))
+	residue := -1
+	if strings.TrimSpace(cfg.Code) != "" {
+		parsed, err := paircode.ParseLink(cfg.Code)
+		if err != nil {
+			return nil, err
+		}
+		secret = parsed.Secret
+		residue = parsed.Residue
+	}
 	if secret == "" {
 		var err error
 		secret, err = paircode.NewSecret()
@@ -171,7 +184,7 @@ func StartServer(parent context.Context, cfg ServerConfig) (*Server, error) {
 		},
 	}
 
-	region, err := pickRegion(ctx)
+	region, err := pickRegion(ctx, residue)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("link: pick DERP region: %w", err)
@@ -641,13 +654,36 @@ func (s *Server) reverseServices() []ServiceState {
 	return s.reverse.services
 }
 
-func pickRegion(ctx context.Context) (*tailcfg.DERPRegion, error) {
+func pickRegion(ctx context.Context, residue int) (*tailcfg.DERPRegion, error) {
+	if residue < 0 {
+		ci := tailcat.ConnInfo{RegionID: -1}
+		if err := ci.Expand(ctx, tailcat.ExpandForServer); err != nil {
+			return nil, err
+		}
+		if len(ci.Region) == 0 || ci.Region[0] == nil {
+			return nil, errors.New("DERP map has no regions")
+		}
+		return ci.Region[0], nil
+	}
+	dm, err := tailcat.FetchDERPMap(ctx, tailcat.ExpandForServer)
+	if err != nil {
+		return nil, err
+	}
+	filtered := &tailcfg.DERPMap{Regions: make(map[tailcfg.DERPRegionID]*tailcfg.DERPRegion)}
+	for id, region := range dm.Regions {
+		if int(id)%len(paircode.Alphabet) == residue {
+			filtered.Regions[id] = region
+		}
+	}
+	if len(filtered.Regions) == 0 {
+		return nil, fmt.Errorf("no DERP region matches residue %d", residue)
+	}
 	ci := tailcat.ConnInfo{RegionID: -1}
-	if err := ci.Expand(ctx, tailcat.ExpandForServer); err != nil {
+	if err := ci.Expand(ctx, filtered, tailcat.ExpandForServer); err != nil {
 		return nil, err
 	}
 	if len(ci.Region) == 0 || ci.Region[0] == nil {
-		return nil, errors.New("DERP map has no regions")
+		return nil, errors.New("DERP map has no matching region")
 	}
 	return ci.Region[0], nil
 }

@@ -34,6 +34,7 @@ public class TailconnectService extends Service {
 
     public static final String ACTION_STOP = "dev.tailconnect.app.STOP";
     public static final String EXTRA_LOOPBACK = "loopback";
+    public static final String EXTRA_PERSISTENT = "persistent";
 
     private Process process;
     private Thread reader;
@@ -41,6 +42,7 @@ public class TailconnectService extends Service {
     private volatile boolean stopping;
     private OutputStream stdin;
     private Discovery discovery;
+    private boolean persistent;
 
     @Override
     public void onCreate() {
@@ -64,6 +66,11 @@ public class TailconnectService extends Service {
         if (process != null && process.isAlive()) return START_NOT_STICKY;
 
         boolean allowLoopback = intent != null && intent.getBooleanExtra(EXTRA_LOOPBACK, false);
+        persistent = intent != null
+                ? intent.getBooleanExtra(EXTRA_PERSISTENT, CodeStore.isEnabled(this))
+                : CodeStore.isEnabled(this);
+        CodeStore.setEnabled(this, persistent);
+        String savedCode = persistent ? CodeStore.load(this) : null;
         Net.LanInfo lan = Net.activeLanInfo(this);
         String prefix = lan.prefix;
         File bin = new File(getApplicationInfo().nativeLibraryDir, "libtailconnect.so");
@@ -89,6 +96,10 @@ public class TailconnectService extends Service {
         cmd.add(Net.appVersion(this));
         cmd.add("--network-type");
         cmd.add(lan.type);
+        if (savedCode != null && !savedCode.isEmpty()) {
+            cmd.add("--code");
+            cmd.add(savedCode);
+        }
         if (!lan.address.isEmpty()) {
             cmd.add("--lan-address");
             cmd.add(lan.address);
@@ -174,15 +185,17 @@ public class TailconnectService extends Service {
             String type = o.optString("type");
             TailconnectState.Snapshot old = TailconnectState.get();
             if ("started".equals(type)) {
+                String code = o.optString("code", "");
+                if (persistent && !code.isEmpty()) CodeStore.save(this, code);
                 TailconnectState.set(new TailconnectState.Snapshot(
                         true, false,
-                        o.optString("code", ""),
+                        code,
                         o.optString("link", ""),
                         o.optString("policy", ""),
                         "", "",
                         o.optInt("region", 0),
                         null));
-                startInForeground("Waiting for agent");
+                startInForeground(persistent ? "Waiting for agent (persistent code)" : "Waiting for agent");
             } else if ("state".equals(type)) {
                 JSONObject s = o.optJSONObject("state");
                 if (s == null) return;

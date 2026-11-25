@@ -135,6 +135,41 @@ The same works for debugging the phone itself: use the phone's own Wi-Fi IP as
 the forward target. For someone else's phone, they enable Wireless debugging and
 give you the pairing code and ports.
 
+### Persistent code
+
+By default the Android app now keeps the same code across service restarts. The
+secret is stored encrypted with Android Keystore; it is not written to logs or
+backups. The app has:
+
+- **Keep this code across restarts** — enabled by default
+- **Rotate** — clears the saved key and starts a new session
+
+The agent can also save the code locally:
+
+```bash
+tailconnect save ABCD-EFGH-JKMN3
+tailconnect agent --name workstation --socks 127.0.0.1:1080
+tailconnect forget
+```
+
+The phone-side CLI can reuse a code too:
+
+```bash
+tailconnect serve --code ABCD-EFGH-JKMN3 --allow 192.168.1.0/24
+```
+
+The saved code lives at:
+
+```text
+$XDG_CONFIG_HOME/tailconnect/pair.json
+```
+
+or the platform user-config directory, with mode `0600`.
+
+A permanent code is a long-lived credential. Rotate it if it is shared or
+leaked. The code still requires the official Tailcat DERP map to resolve its
+region residue.
+
 ### Publish an agent service to the phone
 
 ```bash
@@ -189,8 +224,10 @@ The app:
   discovery results to the agent automatically
 - shows the code, shareable link, connected agent, and agent service bookmarks
 - marks the window `FLAG_SECURE` and keeps the code out of notifications
+- stores an optional persistent code with Android Keystore AES-GCM
 - lets you optionally allow the phone's localhost (for ADB and local servers)
-- stops the process and invalidates the code when you press Stop
+- stops the process and invalidates an ephemeral code when you press Stop;
+  a persistent code survives until you press Rotate
 
 `arm64-v8a` is the default and needs no NDK. For an x86_64 emulator build, set
 `ANDROID_NDK_HOME` and run `make android-bin-x86` before the APK build; Go requires
@@ -212,8 +249,9 @@ cgo/external linking for Android/amd64.
 
 ## Limitations
 
-- 13-character codes are for sessions. Stop/rotate them; do not treat them as
-  permanent credentials.
+- 13-character codes are session credentials by default. A persistent code is a
+  long-lived credential; rotate it if it leaks. The persisted Android key is
+  protected by Android Keystore, but the code is still a bearer secret.
 - Agent services are TCP. The phone-side LAN forwarder supports TCP and unicast
   UDP; the CLI's SOCKS proxy and `--forward` are TCP-only for now.
 - mDNS discovery is best-effort and uses Android's `NsdManager`. SSDP/UPnP is not
@@ -221,7 +259,9 @@ cgo/external linking for Android/amd64.
 - IPv4 LAN prefixes only.
 - HTTPS services exposed through `localhost` may produce certificate warnings.
   HTTP and WebSocket work best.
-- The Android app is arm64 only and needs real-device validation.
+- The Android app is arm64/x86_64 and needs real-device validation.
+- Persistent codes are tied to the code's DERP-region residue. If that residue
+  disappears from the official map, rotate the code.
 - OpenTailcat was used as an architectural reference for Android/Tailcat
   integration, but no VPN code is included.
 
