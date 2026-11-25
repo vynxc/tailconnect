@@ -1,0 +1,21 @@
+/bin/
+/dist/
+*.apk
+*.aab
+*.exe
+.DS_Store
+
+# Android build products
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+
+# Generated Android payload; run `make android-bin`
+android/app/src/main/jniLibs/
+
+# Go
+*.test
+*.out

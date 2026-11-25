@@ -1,0 +1,19 @@
+Tailconnect
+===========
+
+This project is an independent implementation of a serverless Tailcat pair
+tunnel. It is not affiliated with Tailscale Inc.
+
+Third-party components used at runtime:
+
+- github.com/tailscale/tailcat — BSD-3-Clause, Tailscale Inc.
+- github.com/xtaci/smux — MIT.
+- golang.org/x/crypto/argon2 — BSD-3-Clause, The Go Authors.
+
+Design inspiration:
+
+- hideouthq/hideout — GPL-3.0. The short-code idea, alphabet and region-residue
+  technique were studied. No Hideout source code is copied into Tailconnect.
+- OmarAlaaeldein/OpenTailcat — Apache-2.0. Used as an architectural reference
+  for running Tailcat on Android. No OpenTailcat source code is copied into
+  Tailconnect; this app contains no VpnService or VPN data plane.
