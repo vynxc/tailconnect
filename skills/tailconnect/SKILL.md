@@ -41,6 +41,13 @@ TAILCONNECT_CODE=ABCD-EFGH-JKMNP tailconnect agent --name "$(hostname)" --socks 
 Keep this process alive for the duration of the task. Never log, echo, commit,
 or paste the code into a public place.
 
+## Automatic context
+
+As soon as the agent connects, the phone sends its model, network, LAN prefix,
+gateway, reverse service ports, wireless-debugging endpoints, and mDNS-discovered
+LAN services. The agent prints them automatically. Do not ask the user for those
+values if they are already in the output.
+
 ## Reach the phone's LAN
 
 The local SOCKS5 proxy accepts IP addresses on the phone's network:
@@ -60,8 +67,16 @@ Then use `127.0.0.1:5555` locally.
 
 ## Wireless ADB
 
-ADB does not speak SOCKS. Use a forward. Android Wireless debugging uses a
-pairing port and a separate debug port.
+If the agent output already shows:
+
+```text
+adb connect 127.0.0.1:<port> -> <phone>:<port>
+adb pair 127.0.0.1:<port> -> <phone>:<port> (pairing code required)
+```
+
+use those commands directly. The agent creates those local forwards from the
+phone's mDNS discovery. Otherwise, use the manual forwarding below. Android
+Wireless debugging uses a pairing port and a separate debug port.
 
 ```bash
 # 1. Pair
@@ -88,7 +103,8 @@ Use the SOCKS proxy with a known IP and port:
 curl --socks5-hostname 127.0.0.1:1080 http://192.168.1.60:8060/
 ```
 
-Do not scan a network the user does not own or have permission to test.
+Prefer the services already listed under "discovered on the phone LAN". Do not
+scan a network the user does not own or have permission to test.
 
 ## Publish a service to the phone
 

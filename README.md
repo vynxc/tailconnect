@@ -96,10 +96,27 @@ Or create an explicit TCP forward:
   --forward 5555=192.168.1.50:5555
 ```
 
+### Automatic phone context and discovery
+
+When the agent connects, the phone automatically sends a `PhoneContext` over the
+same tunnel. The agent prints it without extra commands:
+
+- phone model and app version
+- Wi-Fi/Ethernet interface, phone IPv4 address, LAN prefix, gateway, DNS
+- reverse service ports and `http://localhost:<port>` URLs
+- wireless-debugging endpoints discovered over mDNS
+- other mDNS services on the phone's LAN (Google Cast, AirPlay, HTTP, printers,
+  SMB, SSH, and similar)
+
+The agent automatically creates local `127.0.0.1` forwards for discovered
+wireless-debugging endpoints and prints the exact commands. Disable that with
+`--no-auto-adb`.
+
 ### Wireless ADB
 
-ADB does not speak SOCKS, so use a forward. Wireless debugging uses two ports:
-the pairing port shown on the phone, and the later debug port.
+If the phone advertises Wireless debugging over mDNS, the agent prints the
+ready-to-run commands. Otherwise, forward the two ports manually. Wireless
+debugging uses a pairing port and a later debug port:
 
 ```bash
 # Pair (use the pairing port shown under Wireless debugging)
@@ -112,6 +129,7 @@ adb pair 127.0.0.1:37123
   --forward 5555=192.168.1.50:5555
 adb connect 127.0.0.1:5555
 ```
+
 
 The same works for debugging the phone itself: use the phone's own Wi-Fi IP as
 the forward target. For someone else's phone, they enable Wireless debugging and
@@ -164,7 +182,11 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 The app:
 
 - starts the server as a `specialUse` foreground service
+- uses a dark Material 3 UI (`Theme.Material3.Dark.NoActionBar`) with M3 cards,
+  filled/outlined buttons, and color roles
 - detects the active Wi-Fi/Ethernet IPv4 subnet and allowlists it
+- sends phone model, network, gateway, DNS, reverse service ports, and mDNS
+  discovery results to the agent automatically
 - shows the code, shareable link, connected agent, and agent service bookmarks
 - marks the window `FLAG_SECURE` and keeps the code out of notifications
 - lets you optionally allow the phone's localhost (for ADB and local servers)
@@ -194,7 +216,8 @@ cgo/external linking for Android/amd64.
   permanent credentials.
 - Agent services are TCP. The phone-side LAN forwarder supports TCP and unicast
   UDP; the CLI's SOCKS proxy and `--forward` are TCP-only for now.
-- mDNS/SSDP discovery is not implemented. Use known IPs and ports.
+- mDNS discovery is best-effort and uses Android's `NsdManager`. SSDP/UPnP is not
+  implemented yet. Use known IPs and ports when discovery misses a device.
 - IPv4 LAN prefixes only.
 - HTTPS services exposed through `localhost` may produce certificate warnings.
   HTTP and WebSocket work best.

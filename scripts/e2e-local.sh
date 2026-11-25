@@ -5,9 +5,9 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 BIN="$ROOT/bin/tailconnect"
-HTTP_PORT=18080
-FORWARD_PORT=18081
-SOCKS_PORT=11080
+HTTP_PORT=${HTTP_PORT:-28080}
+FORWARD_PORT=${FORWARD_PORT:-28081}
+SOCKS_PORT=${SOCKS_PORT:-21080}
 TMP=$(mktemp -d)
 HTTP_PID=""
 SRV_PID=""
@@ -26,7 +26,7 @@ trap cleanup EXIT
 python3 -m http.server "$HTTP_PORT" --bind 127.0.0.1 >"$TMP/http.log" 2>&1 &
 HTTP_PID=$!
 
-"$BIN" serve --secret ABCDEFGHJKMN --allow-loopback --json >"$TMP/serve.log" 2>&1 &
+"$BIN" serve --allow-loopback --json >"$TMP/serve.log" 2>&1 &
 SRV_PID=$!
 
 for _ in $(seq 1 40); do

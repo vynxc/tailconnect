@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Tailconnect" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/tc_primary</item>
+        <item name="colorOnPrimary">@color/tc_on_primary</item>
+        <item name="colorPrimaryContainer">@color/tc_primary_container</item>
+        <item name="colorOnPrimaryContainer">@color/tc_on_primary_container</item>
+        <item name="colorSecondary">@color/tc_secondary</item>
+        <item name="colorSurface">@color/tc_surface</item>
+        <item name="colorOnSurface">@color/tc_on_surface</item>
+        <item name="colorSurfaceVariant">@color/tc_surface_container_high</item>
+        <item name="colorOnSurfaceVariant">@color/tc_on_surface_variant</item>
+        <item name="colorOutline">@color/tc_outline</item>
+        <item name="colorError">@color/tc_error</item>
+        <item name="colorOnError">@color/tc_on_error</item>
+        <item name="android:colorBackground">@color/tc_surface</item>
+        <item name="android:windowBackground">@color/tc_surface</item>
+        <item name="android:statusBarColor">@color/tc_surface</item>
+        <item name="android:navigationBarColor">@color/tc_surface</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>

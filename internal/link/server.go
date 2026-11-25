@@ -1,10 +1,12 @@
 package link
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/netip"
@@ -77,6 +79,16 @@ type ServerConfig struct {
 
 	// Verbose enables Tailcat's internal networking logs.
 	Verbose bool
+
+	// Context is shown to the agent when it connects. Android fills these from
+	// Build.MODEL, LinkProperties and the foreground service.
+	PhoneName   string
+	AppVersion  string
+	NetworkType string
+	LANAddress  string
+	LANPrefix   string
+	Gateway     string
+	DNSServers  []string
 }
 
 type Server struct {
@@ -96,6 +108,17 @@ type Server struct {
 	reverse *reverseSession
 	agent   AgentState
 	onState func(ServerState)
+
+	ctxMu         sync.Mutex
+	contextSess   *smux.Session
+	contextOut    *smux.Stream
+	contextMu     sync.Mutex // serializes writes to contextOut
+	discoveryADB  []protocol.ADBService
+	discoveryMDNS []protocol.DiscoveredService
+
+	phoneName  string
+	appVersion string
+	network    protocol.Network
 }
 
 func StartServer(parent context.Context, cfg ServerConfig) (*Server, error) {
@@ -127,13 +150,25 @@ func StartServer(parent context.Context, cfg ServerConfig) (*Server, error) {
 	clientPub := clientKey.Public()
 
 	ctx, cancel := context.WithCancel(parent)
+	if cfg.NetworkType == "" {
+		cfg.NetworkType = "unknown"
+	}
 	s := &Server{
-		policy:  cfg.Policy,
-		port:    cfg.ControlPort,
-		logf:    func(format string, args ...any) { logf(paircode.Redact(fmt.Sprintf(format, args...))) },
-		ctx:     ctx,
-		cancel:  cancel,
-		onState: cfg.OnState,
+		policy:     cfg.Policy,
+		port:       cfg.ControlPort,
+		logf:       func(format string, args ...any) { logf(paircode.Redact(fmt.Sprintf(format, args...))) },
+		ctx:        ctx,
+		cancel:     cancel,
+		onState:    cfg.OnState,
+		phoneName:  cfg.PhoneName,
+		appVersion: cfg.AppVersion,
+		network: protocol.Network{
+			Type:    cfg.NetworkType,
+			Address: cfg.LANAddress,
+			Prefix:  cfg.LANPrefix,
+			Gateway: cfg.Gateway,
+			DNS:     append([]string(nil), cfg.DNSServers...),
+		},
 	}
 
 	region, err := pickRegion(ctx)
@@ -284,6 +319,25 @@ func (s *Server) handleControl(conn net.Conn) {
 	}
 	s.emit()
 
+	// Open a phone -> agent context stream. It carries the phone's network,
+	// reverse service ports and discovery results so the agent does not have
+	// to ask for them.
+	if ctxStream, err := sess.OpenStream(); err == nil {
+		if herr := protocol.WriteHeader(ctxStream, protocol.StreamHeader{
+			Version: protocol.Version, Kind: protocol.StreamKindContext,
+		}); herr == nil {
+			s.ctxMu.Lock()
+			s.contextSess = sess
+			s.contextOut = ctxStream
+			s.ctxMu.Unlock()
+			s.sendContext()
+		} else {
+			ctxStream.Close()
+		}
+	} else {
+		s.logf("context stream: %v", err)
+	}
+
 	// Accept and discard agent-opened streams after the manifest. The phone is
 	// the side that opens service streams; anything else is unexpected.
 	go func() {
@@ -300,6 +354,15 @@ func (s *Server) handleControl(conn net.Conn) {
 	case <-s.ctx.Done():
 	case <-sess.CloseChan():
 	}
+	s.ctxMu.Lock()
+	if s.contextSess == sess {
+		if s.contextOut != nil {
+			s.contextOut.Close()
+		}
+		s.contextSess = nil
+		s.contextOut = nil
+	}
+	s.ctxMu.Unlock()
 	s.mu.Lock()
 	if s.reverse == rs {
 		s.reverse = nil
@@ -481,6 +544,101 @@ func labelOrID(svc protocol.Service) string {
 		return svc.ID
 	}
 	return svc.Label
+}
+
+// UpdateDiscovery replaces the discovery snapshot and pushes it to the agent.
+func (s *Server) UpdateDiscovery(adb []protocol.ADBService, mdns []protocol.DiscoveredService) {
+	s.ctxMu.Lock()
+	s.discoveryADB = append([]protocol.ADBService(nil), adb...)
+	s.discoveryMDNS = append([]protocol.DiscoveredService(nil), mdns...)
+	s.ctxMu.Unlock()
+	s.sendContext()
+}
+
+// ReadContextInput reads newline-delimited JSON from the Android process's
+// stdin. Only discovery messages are currently defined; unknown types are
+// ignored so the channel can grow without breaking old servers.
+func (s *Server) ReadContextInput(r io.Reader) error {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64<<10), 512<<10)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var in protocol.ContextInput
+		if err := json.Unmarshal([]byte(line), &in); err != nil {
+			s.logf("context input: %v", err)
+			continue
+		}
+		switch in.Type {
+		case "discovery":
+			s.UpdateDiscovery(in.ADB, in.MDNS)
+		}
+	}
+	return sc.Err()
+}
+
+func (s *Server) sendContext() {
+	ctx := s.contextSnapshot()
+	s.ctxMu.Lock()
+	out := s.contextOut
+	s.ctxMu.Unlock()
+	if out == nil {
+		return
+	}
+	s.contextMu.Lock()
+	defer s.contextMu.Unlock()
+	if err := protocol.WriteMessage(out, ctx); err != nil {
+		s.ctxMu.Lock()
+		if s.contextOut == out {
+			s.contextOut = nil
+			s.contextSess = nil
+		}
+		s.ctxMu.Unlock()
+		out.Close()
+	}
+}
+
+func (s *Server) contextSnapshot() protocol.PhoneContext {
+	s.mu.Lock()
+	services := make([]protocol.PublishedService, 0, len(s.reverseServices()))
+	if s.reverse != nil {
+		for _, svc := range s.reverse.services {
+			services = append(services, protocol.PublishedService{
+				ID: svc.ID, Label: svc.Label, Port: svc.Port, URL: svc.URL,
+			})
+		}
+	}
+	policy := s.policy
+	s.mu.Unlock()
+	sort.Slice(services, func(i, j int) bool { return services[i].ID < services[j].ID })
+
+	s.ctxMu.Lock()
+	adb := append([]protocol.ADBService(nil), s.discoveryADB...)
+	mdns := append([]protocol.DiscoveredService(nil), s.discoveryMDNS...)
+	s.ctxMu.Unlock()
+
+	return protocol.PhoneContext{
+		Version:       protocol.ContextVersion,
+		Phone:         s.phoneName,
+		App:           s.appVersion,
+		Network:       s.network,
+		Policy:        policy.String(),
+		AllowLoopback: policy.AllowLoopback,
+		ControlPort:   int(s.port),
+		Region:        int(s.region),
+		Services:      services,
+		ADB:           adb,
+		Discovered:    mdns,
+	}
+}
+
+func (s *Server) reverseServices() []ServiceState {
+	if s.reverse == nil {
+		return nil
+	}
+	return s.reverse.services
 }
 
 func pickRegion(ctx context.Context) (*tailcfg.DERPRegion, error) {

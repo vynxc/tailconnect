@@ -12,8 +12,12 @@ import (
 
 const (
 	Version            = 1
+	ContextVersion     = 1
 	DefaultControlPort = 7000
 	MaxMessage         = 64 << 10
+
+	StreamKindService = "service"
+	StreamKindContext = "context"
 )
 
 var (
@@ -38,10 +42,70 @@ type Manifest struct {
 	Services []Service `json:"services"`
 }
 
-// StreamHeader prefixes an agent-bound stream opened by the phone.
+// StreamHeader prefixes a stream opened by the phone. Service streams are the
+// original kind; context streams carry PhoneContext updates.
 type StreamHeader struct {
 	Version int    `json:"v"`
-	Service string `json:"service"`
+	Kind    string `json:"kind,omitempty"`
+	Service string `json:"service,omitempty"`
+}
+
+// Network describes the phone's active network as seen by Android.
+type Network struct {
+	Type      string   `json:"type,omitempty"`      // wifi, ethernet, cellular, none
+	Interface string   `json:"interface,omitempty"` // wlan0, eth0, ...
+	Address   string   `json:"address,omitempty"`   // 192.168.1.50
+	Prefix    string   `json:"prefix,omitempty"`    // 192.168.1.0/24
+	Gateway   string   `json:"gateway,omitempty"`
+	DNS       []string `json:"dns,omitempty"`
+}
+
+// PublishedService is a reverse service the phone has made available.
+type PublishedService struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Port  int    `json:"port"`
+	URL   string `json:"url"`
+}
+
+// ADBService is a wireless-debugging endpoint discovered by the phone.
+type ADBService struct {
+	Name    string `json:"name,omitempty"`
+	Type    string `json:"type,omitempty"`
+	Host    string `json:"host,omitempty"`
+	Port    int    `json:"port,omitempty"`
+	Pairing bool   `json:"pairing,omitempty"`
+}
+
+// DiscoveredService is an mDNS service discovered on the phone's LAN.
+type DiscoveredService struct {
+	Name string `json:"name,omitempty"`
+	Type string `json:"type,omitempty"`
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+}
+
+// PhoneContext is sent by the phone as soon as an agent connects, and again
+// whenever the phone's services or discovery results change.
+type PhoneContext struct {
+	Version       int                 `json:"v"`
+	Phone         string              `json:"phone,omitempty"`
+	App           string              `json:"app,omitempty"`
+	Network       Network             `json:"network"`
+	Policy        string              `json:"policy,omitempty"`
+	AllowLoopback bool                `json:"allowLoopback,omitempty"`
+	ControlPort   int                 `json:"controlPort,omitempty"`
+	Region        int                 `json:"region,omitempty"`
+	Services      []PublishedService  `json:"services,omitempty"`
+	ADB           []ADBService        `json:"adb,omitempty"`
+	Discovered    []DiscoveredService `json:"discovered,omitempty"`
+}
+
+// ContextInput is a line written to the server's stdin by the Android app.
+type ContextInput struct {
+	Type string              `json:"type"`
+	ADB  []ADBService        `json:"adb,omitempty"`
+	MDNS []DiscoveredService `json:"mdns,omitempty"`
 }
 
 func WriteMessage(w io.Writer, v any) error {
@@ -92,8 +156,15 @@ func ReadHeader(r io.Reader) (StreamHeader, error) {
 	if h.Version != Version {
 		return StreamHeader{}, ErrBadVersion
 	}
-	if h.Service == "" {
-		return StreamHeader{}, errors.New("protocol: empty service")
+	switch h.Kind {
+	case StreamKindContext:
+		return h, nil
+	case "", StreamKindService:
+		if h.Service == "" {
+			return StreamHeader{}, errors.New("protocol: empty service")
+		}
+		return h, nil
+	default:
+		return StreamHeader{}, fmt.Errorf("protocol: unknown stream kind %q", h.Kind)
 	}
-	return h, nil
 }

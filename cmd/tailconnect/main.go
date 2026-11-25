@@ -19,9 +19,10 @@ import (
 
 	"github.com/vynxc/tailconnect/internal/link"
 	"github.com/vynxc/tailconnect/internal/paircode"
+	"github.com/vynxc/tailconnect/internal/protocol"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
 	log.SetFlags(0)
@@ -81,6 +82,14 @@ func serve(args []string) {
 	allowLoopback := fs.Bool("allow-loopback", false, "also allow the phone-side localhost (dangerous)")
 	controlPort := fs.Uint("control-port", uint(protocolControlPort()), "tailcat control port")
 	parentPID := fs.Int("parent-pid", 0, "exit if this parent PID goes away (Android service)")
+	phoneName := fs.String("phone-name", "", "phone name shown to the agent")
+	appVersion := fs.String("app-version", version, "phone app version shown to the agent")
+	networkType := fs.String("network-type", "unknown", "wifi, ethernet, cellular, or unknown")
+	lanAddress := fs.String("lan-address", "", "phone's own LAN IPv4 address")
+	lanPrefix := fs.String("lan-prefix", "", "phone's LAN IPv4 prefix")
+	gateway := fs.String("gateway", "", "phone's default gateway")
+	dns := &stringList{}
+	fs.Var(dns, "dns", "phone DNS server (repeatable)")
 	jsonState := fs.Bool("json", false, "print machine-readable JSON lines")
 	verbose := fs.Bool("verbose", false, "enable Tailcat networking logs")
 	_ = fs.Parse(args)
@@ -88,6 +97,12 @@ func serve(args []string) {
 	policy, err := link.ParsePolicy(allow.values, *allowLoopback)
 	if err != nil {
 		fatal(err)
+	}
+	if *phoneName == "" {
+		*phoneName, _ = os.Hostname()
+	}
+	if *lanPrefix == "" && len(policy.Prefixes) > 0 {
+		*lanPrefix = policy.Prefixes[0].String()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -115,6 +130,13 @@ func serve(args []string) {
 		Policy:      policy,
 		ControlPort: uint16(*controlPort),
 		Verbose:     *verbose,
+		PhoneName:   *phoneName,
+		AppVersion:  *appVersion,
+		NetworkType: *networkType,
+		LANAddress:  *lanAddress,
+		LANPrefix:   *lanPrefix,
+		Gateway:     *gateway,
+		DNSServers:  dns.values,
 		OnState: func(state link.ServerState) {
 			if *jsonState {
 				jsonMu.Lock()
@@ -133,6 +155,7 @@ func serve(args []string) {
 		fatal(err)
 	}
 	defer srv.Close()
+	go func() { _ = srv.ReadContextInput(os.Stdin) }()
 
 	started := map[string]any{
 		"type":        "started",
@@ -163,6 +186,7 @@ func agent(args []string) {
 	code := fs.String("code", "", "pairing code or tailconnect://pair/ link")
 	name := fs.String("name", "", "agent name shown on the phone")
 	socks := fs.String("socks", "", "local SOCKS5 listen address, e.g. 127.0.0.1:1080")
+	noAutoADB := fs.Bool("no-auto-adb", false, "do not create local forwards for discovered wireless-debugging endpoints")
 	expose := &stringList{}
 	forward := &stringList{}
 	fs.Var(expose, "expose", "id=host:port service to publish to the phone (repeatable)")
@@ -194,18 +218,32 @@ func agent(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var jsonMu sync.Mutex
 	c, err := link.StartClient(ctx, link.ClientConfig{
-		Code:        parsed.Code,
-		Name:        *name,
-		Expose:      exposes,
-		Forwards:    forwards,
-		SOCKSListen: *socks,
-		ControlPort: uint16(*controlPort),
-		Verbose:     *verbose,
+		Code:           parsed.Code,
+		Name:           *name,
+		Expose:         exposes,
+		Forwards:       forwards,
+		SOCKSListen:    *socks,
+		ControlPort:    uint16(*controlPort),
+		Verbose:        *verbose,
+		DisableAutoADB: *noAutoADB,
+		OnContext: func(ctx protocol.PhoneContext, adb []link.ADBForward) {
+			if *jsonState {
+				jsonMu.Lock()
+				_ = json.NewEncoder(os.Stdout).Encode(map[string]any{
+					"type": "context", "context": ctx, "adb": adb,
+				})
+				jsonMu.Unlock()
+				return
+			}
+			printContext(ctx, adb)
+		},
 		OnState: func(state link.ClientState) {
 			if *jsonState {
-				enc := json.NewEncoder(os.Stdout)
-				_ = enc.Encode(state)
+				jsonMu.Lock()
+				_ = json.NewEncoder(os.Stdout).Encode(state)
+				jsonMu.Unlock()
 				return
 			}
 			fmt.Printf("connected=%v region=%d path=%s agent=%s\n", state.Connected, state.RegionID, state.Path, state.Agent)
@@ -229,6 +267,54 @@ func agent(args []string) {
 	}
 	fmt.Printf("\nCtrl-C disconnects.\n")
 	<-ctx.Done()
+}
+
+func printContext(ctx protocol.PhoneContext, adb []link.ADBForward) {
+	if ctx.Phone != "" {
+		fmt.Printf("\nphone: %s", ctx.Phone)
+		if ctx.App != "" {
+			fmt.Printf(" (app %s)", ctx.App)
+		}
+		fmt.Println()
+	}
+	if ctx.Network.Type != "" || ctx.Network.Prefix != "" || ctx.Network.Address != "" {
+		fmt.Printf("network: %s", ctx.Network.Type)
+		if ctx.Network.Interface != "" {
+			fmt.Printf(" %s", ctx.Network.Interface)
+		}
+		if ctx.Network.Address != "" {
+			fmt.Printf(" %s", ctx.Network.Address)
+		}
+		if ctx.Network.Prefix != "" {
+			fmt.Printf(" (%s)", ctx.Network.Prefix)
+		}
+		if ctx.Network.Gateway != "" {
+			fmt.Printf(" gateway %s", ctx.Network.Gateway)
+		}
+		fmt.Println()
+	}
+	if len(ctx.Services) > 0 {
+		fmt.Println("phone services:")
+		for _, svc := range ctx.Services {
+			fmt.Printf("  %-12s %-24s %s\n", svc.ID, svc.Label, svc.URL)
+		}
+	}
+	if len(ctx.ADB) > 0 || len(adb) > 0 {
+		fmt.Println("wireless debugging:")
+		for _, f := range adb {
+			if f.Kind == "pair" {
+				fmt.Printf("  adb pair %s   -> %s (pairing code required)\n", f.Local, f.Target)
+			} else {
+				fmt.Printf("  adb connect %s -> %s\n", f.Local, f.Target)
+			}
+		}
+	}
+	if len(ctx.Discovered) > 0 {
+		fmt.Println("discovered on the phone LAN:")
+		for _, svc := range ctx.Discovered {
+			fmt.Printf("  %-28s %-22s %s:%d\n", svc.Name, svc.Type, svc.Host, svc.Port)
+		}
+	}
 }
 
 func parse(args []string) {

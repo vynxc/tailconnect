@@ -20,6 +20,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,6 +39,8 @@ public class TailconnectService extends Service {
     private Thread reader;
     private PowerManager.WakeLock wakeLock;
     private volatile boolean stopping;
+    private OutputStream stdin;
+    private Discovery discovery;
 
     @Override
     public void onCreate() {
@@ -61,7 +64,8 @@ public class TailconnectService extends Service {
         if (process != null && process.isAlive()) return START_NOT_STICKY;
 
         boolean allowLoopback = intent != null && intent.getBooleanExtra(EXTRA_LOOPBACK, false);
-        String prefix = Net.activeLanPrefix(this);
+        Net.LanInfo lan = Net.activeLanInfo(this);
+        String prefix = lan.prefix;
         File bin = new File(getApplicationInfo().nativeLibraryDir, "libtailconnect.so");
         if (!bin.canExecute()) {
             // Most package managers extract native libraries executable. If
@@ -79,9 +83,29 @@ public class TailconnectService extends Service {
         cmd.add("--json");
         cmd.add("--parent-pid");
         cmd.add(String.valueOf(android.os.Process.myPid()));
-        if (prefix != null) {
+        cmd.add("--phone-name");
+        cmd.add(Net.phoneName());
+        cmd.add("--app-version");
+        cmd.add(Net.appVersion(this));
+        cmd.add("--network-type");
+        cmd.add(lan.type);
+        if (!lan.address.isEmpty()) {
+            cmd.add("--lan-address");
+            cmd.add(lan.address);
+        }
+        if (!lan.prefix.isEmpty()) {
+            cmd.add("--lan-prefix");
+            cmd.add(lan.prefix);
             cmd.add("--allow");
-            cmd.add(prefix);
+            cmd.add(lan.prefix);
+        }
+        if (!lan.gateway.isEmpty()) {
+            cmd.add("--gateway");
+            cmd.add(lan.gateway);
+        }
+        for (String dns : lan.dns) {
+            cmd.add("--dns");
+            cmd.add(dns);
         }
         if (allowLoopback) cmd.add("--allow-loopback");
 
@@ -90,10 +114,13 @@ public class TailconnectService extends Service {
             pb.redirectErrorStream(true);
             pb.environment().put("HOME", getFilesDir().getAbsolutePath());
             process = pb.start();
+            stdin = process.getOutputStream();
             stopping = false;
             TailconnectState.set(new TailconnectState.Snapshot(
                     true, false, "", "", prefix == null ? "" : prefix, "", "", 0, null));
             startReader();
+            discovery = new Discovery(this, this::sendDiscovery);
+            discovery.start();
             startInForeground(prefix == null ? "Waiting for agent (no LAN)" : "Sharing " + prefix);
             return START_NOT_STICKY;
         } catch (Exception e) {
@@ -125,6 +152,20 @@ public class TailconnectService extends Service {
         }, "tailconnect-reader");
         reader.setDaemon(true);
         reader.start();
+    }
+
+    private void sendDiscovery(String json) {
+        OutputStream out = stdin;
+        if (out == null) return;
+        try {
+            synchronized (this) {
+                out.write(json.getBytes(StandardCharsets.UTF_8));
+                out.write('\n');
+                out.flush();
+            }
+        } catch (Exception ignored) {
+            // The server may be stopping; discovery is best-effort.
+        }
     }
 
     private void handleJson(String line) {
@@ -220,6 +261,10 @@ public class TailconnectService extends Service {
     @Override
     public void onDestroy() {
         stopping = true;
+        if (discovery != null) discovery.stop();
+        if (stdin != null) {
+            try { stdin.close(); } catch (Exception ignored) {}
+        }
         if (process != null) {
             process.destroy();
             try {

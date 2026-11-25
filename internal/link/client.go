@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,18 +52,31 @@ type ClientConfig struct {
 	Forwards    []Forward
 	SOCKSListen string
 
-	ControlPort uint16
-	Logf        func(string, ...any)
-	OnState     func(ClientState)
-	Verbose     bool
+	ControlPort    uint16
+	Logf           func(string, ...any)
+	OnState        func(ClientState)
+	OnContext      func(protocol.PhoneContext, []ADBForward)
+	DisableAutoADB bool
+	Verbose        bool
+}
+
+// ADBForward is an automatically created local forward for a wireless-debugging
+// endpoint discovered by the phone.
+type ADBForward struct {
+	Kind    string `json:"kind"` // "connect" or "pair"
+	Local   string `json:"local"`
+	Target  string `json:"target"`
+	Pairing bool   `json:"pairing,omitempty"`
 }
 
 type ClientState struct {
-	Connected bool           `json:"connected"`
-	RegionID  int            `json:"regionId,omitempty"`
-	Path      string         `json:"path,omitempty"`
-	Agent     string         `json:"agent,omitempty"`
-	Services  []ServiceState `json:"services,omitempty"`
+	Connected bool                   `json:"connected"`
+	RegionID  int                    `json:"regionId,omitempty"`
+	Path      string                 `json:"path,omitempty"`
+	Agent     string                 `json:"agent,omitempty"`
+	Services  []ServiceState         `json:"services,omitempty"`
+	Context   *protocol.PhoneContext `json:"context,omitempty"`
+	ADB       []ADBForward           `json:"adb,omitempty"`
 }
 
 type Client struct {
@@ -83,6 +97,15 @@ type Client struct {
 
 	socks    *SocksServer
 	forwards []*tcpForward
+
+	adbMu    sync.Mutex
+	adb      map[string]*autoADBForward
+	phoneCtx *protocol.PhoneContext
+}
+
+type autoADBForward struct {
+	fw   *tcpForward
+	info ADBForward
 }
 
 func StartClient(parent context.Context, cfg ClientConfig) (*Client, error) {
@@ -113,6 +136,7 @@ func StartClient(parent context.Context, cfg ClientConfig) (*Client, error) {
 		ctx:      ctx,
 		cancel:   cancel,
 		closed:   make(chan struct{}),
+		adb:      make(map[string]*autoADBForward),
 	}
 	if err := c.startLocalListeners(); err != nil {
 		cancel()
@@ -141,6 +165,7 @@ func (c *Client) Close() error {
 			c.tc.Close()
 		}
 		c.mu.Unlock()
+		c.closeADB()
 		close(c.closed)
 	})
 	return nil
@@ -318,11 +343,11 @@ func (c *Client) acceptAgentStreams(sess *smux.Session) {
 		if err != nil {
 			return
 		}
-		go c.serveAgentStream(stream)
+		go c.servePhoneStream(stream)
 	}
 }
 
-func (c *Client) serveAgentStream(stream *smux.Stream) {
+func (c *Client) servePhoneStream(stream *smux.Stream) {
 	defer stream.Close()
 	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 	h, err := protocol.ReadHeader(stream)
@@ -330,6 +355,10 @@ func (c *Client) serveAgentStream(stream *smux.Stream) {
 		return
 	}
 	_ = stream.SetDeadline(time.Time{})
+	if h.Kind == protocol.StreamKindContext {
+		c.readContext(stream)
+		return
+	}
 	var target string
 	for _, e := range c.cfg.Expose {
 		if e.ID == h.Service {
@@ -345,6 +374,149 @@ func (c *Client) serveAgentStream(stream *smux.Stream) {
 		return
 	}
 	tailcat.ProxyConns(stream, remote)
+}
+
+func (c *Client) readContext(stream *smux.Stream) {
+	for {
+		var ctx protocol.PhoneContext
+		if err := protocol.ReadMessage(stream, &ctx); err != nil {
+			return
+		}
+		if ctx.Version != protocol.ContextVersion {
+			continue
+		}
+		c.handleContext(sanitizeContext(ctx))
+	}
+}
+
+func (c *Client) handleContext(ctx protocol.PhoneContext) {
+	adb := c.syncADB(ctx.ADB)
+	c.mu.Lock()
+	c.phoneCtx = &ctx
+	c.state.Context = &ctx
+	c.state.ADB = adb
+	c.mu.Unlock()
+	c.emit()
+	if c.cfg.OnContext != nil {
+		c.cfg.OnContext(ctx, append([]ADBForward(nil), adb...))
+	}
+}
+
+func sanitizeContext(ctx protocol.PhoneContext) protocol.PhoneContext {
+	ctx.Phone = trimLimit(ctx.Phone, 64)
+	ctx.App = trimLimit(ctx.App, 32)
+	ctx.Policy = trimLimit(ctx.Policy, 256)
+	ctx.Network.Type = trimLimit(ctx.Network.Type, 16)
+	ctx.Network.Interface = trimLimit(ctx.Network.Interface, 32)
+	ctx.Network.Address = trimLimit(ctx.Network.Address, 64)
+	ctx.Network.Prefix = trimLimit(ctx.Network.Prefix, 64)
+	ctx.Network.Gateway = trimLimit(ctx.Network.Gateway, 64)
+	if len(ctx.Network.DNS) > 8 {
+		ctx.Network.DNS = ctx.Network.DNS[:8]
+	}
+	if len(ctx.Services) > 64 {
+		ctx.Services = ctx.Services[:64]
+	}
+	for i := range ctx.Services {
+		ctx.Services[i].ID = trimLimit(ctx.Services[i].ID, 64)
+		ctx.Services[i].Label = trimLimit(ctx.Services[i].Label, 96)
+		ctx.Services[i].URL = trimLimit(ctx.Services[i].URL, 256)
+		if ctx.Services[i].Port < 1 || ctx.Services[i].Port > 65535 {
+			ctx.Services[i].Port = 0
+		}
+	}
+	if len(ctx.ADB) > 16 {
+		ctx.ADB = ctx.ADB[:16]
+	}
+	for i := range ctx.ADB {
+		ctx.ADB[i].Name = trimLimit(ctx.ADB[i].Name, 96)
+		ctx.ADB[i].Type = trimLimit(ctx.ADB[i].Type, 64)
+		ctx.ADB[i].Host = strings.TrimSpace(ctx.ADB[i].Host)
+		if ctx.ADB[i].Port < 1 || ctx.ADB[i].Port > 65535 {
+			ctx.ADB[i].Port = 0
+		}
+	}
+	if len(ctx.Discovered) > 64 {
+		ctx.Discovered = ctx.Discovered[:64]
+	}
+	for i := range ctx.Discovered {
+		ctx.Discovered[i].Name = trimLimit(ctx.Discovered[i].Name, 96)
+		ctx.Discovered[i].Type = trimLimit(ctx.Discovered[i].Type, 64)
+		ctx.Discovered[i].Host = strings.TrimSpace(ctx.Discovered[i].Host)
+		if ctx.Discovered[i].Port < 1 || ctx.Discovered[i].Port > 65535 {
+			ctx.Discovered[i].Port = 0
+		}
+	}
+	return ctx
+}
+
+func trimLimit(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		s = s[:n]
+	}
+	return s
+}
+
+func (c *Client) syncADB(services []protocol.ADBService) []ADBForward {
+	if c.cfg.DisableAutoADB {
+		return nil
+	}
+	desired := make(map[string]protocol.ADBService)
+	for _, svc := range services {
+		host := strings.TrimSpace(svc.Host)
+		if host == "" || svc.Port < 1 || svc.Port > 65535 {
+			continue
+		}
+		if a, err := netip.ParseAddr(host); err == nil && !a.Is4() {
+			continue // the phone-side policy is IPv4-only for now
+		}
+		target := net.JoinHostPort(host, strconv.Itoa(svc.Port))
+		desired[target] = svc
+	}
+	c.adbMu.Lock()
+	defer c.adbMu.Unlock()
+	for key, f := range c.adb {
+		if _, ok := desired[key]; !ok {
+			f.fw.ln.Close()
+			delete(c.adb, key)
+		}
+	}
+	var out []ADBForward
+	for key, svc := range desired {
+		if f, ok := c.adb[key]; ok {
+			out = append(out, f.info)
+			continue
+		}
+		ap, err := resolveAddrPort(key)
+		if err != nil {
+			continue
+		}
+		ln, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			continue
+		}
+		fw := &tcpForward{ln: ln, target: ap, client: c}
+		kind := "connect"
+		if svc.Pairing {
+			kind = "pair"
+		}
+		info := ADBForward{Kind: kind, Local: ln.Addr().String(), Target: ap.String(), Pairing: svc.Pairing}
+		c.adb[key] = &autoADBForward{fw: fw, info: info}
+		out = append(out, info)
+		go fw.accept()
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Local < out[j].Local })
+	return out
+}
+
+func (c *Client) closeADB() {
+	c.adbMu.Lock()
+	defer c.adbMu.Unlock()
+	for key, f := range c.adb {
+		f.fw.ln.Close()
+		delete(c.adb, key)
+	}
 }
 
 func (c *Client) watchPath(tc *tailcat.Client) {

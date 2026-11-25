@@ -1,45 +1,53 @@
 package dev.tailconnect.app;
 
-import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.TypedValue;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.Button;
-import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.appcompat.app.AppCompatActivity;
+
+import com.google.android.material.button.MaterialButton;
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.checkbox.MaterialCheckBox;
+
 import java.util.List;
 
-/** Native control surface. It runs no VPN and asks for no VPN permission. */
-public class MainActivity extends Activity implements TailconnectState.Listener {
+/** Dark Material 3 control surface. It runs no VPN and asks for no VPN permission. */
+public class MainActivity extends AppCompatActivity implements TailconnectState.Listener {
     private TextView statusView;
+    private MaterialCardView statusCard;
     private TextView codeView;
     private TextView linkView;
     private TextView policyView;
     private TextView agentView;
     private TextView errorView;
     private LinearLayout servicesBox;
-    private Button startButton;
-    private Button stopButton;
-    private CheckBox loopback;
+    private MaterialButton startButton;
+    private MaterialButton stopButton;
+    private MaterialCheckBox loopback;
     private String serviceSignature = "";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
+        getWindow().setStatusBarColor(color(com.google.android.material.R.attr.colorSurface));
+        getWindow().setNavigationBarColor(color(com.google.android.material.R.attr.colorSurface));
         setContentView(buildUi());
         TailconnectState.addListener(this);
         if (Build.VERSION.SDK_INT >= 33
@@ -58,104 +66,170 @@ public class MainActivity extends Activity implements TailconnectState.Listener 
         int pad = dp(20);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(pad, pad, pad, pad);
-        root.setBackgroundColor(Color.WHITE);
+        root.setPadding(pad, pad, pad, dp(32));
+        root.setBackgroundColor(color(com.google.android.material.R.attr.colorSurface));
 
-        TextView title = new TextView(this);
-        title.setText("Tailconnect");
-        title.setTextSize(30);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(Color.BLACK);
+        TextView title = text("Tailconnect", 34, Typeface.DEFAULT_BOLD,
+                color(com.google.android.material.R.attr.colorOnSurface));
         root.addView(title);
 
-        TextView subtitle = new TextView(this);
-        subtitle.setText("Serverless Tailcat tunnel. No VPN, no account, no middleman.");
-        subtitle.setTextSize(14);
-        subtitle.setTextColor(Color.DKGRAY);
-        subtitle.setPadding(0, dp(4), 0, dp(12));
+        TextView subtitle = text("Serverless Tailcat tunnel\nNo VPN · no account · no middleman",
+                14, Typeface.DEFAULT, color(com.google.android.material.R.attr.colorOnSurfaceVariant));
+        subtitle.setLineSpacing(0, 1.15f);
+        subtitle.setPadding(0, dp(6), 0, dp(18));
         root.addView(subtitle);
 
-        statusView = text(16, Color.BLACK, Typeface.DEFAULT_BOLD);
-        root.addView(statusView);
+        statusCard = new MaterialCardView(this);
+        styleCard(statusCard);
+        statusCard.setCardBackgroundColor(color(com.google.android.material.R.attr.colorSurfaceVariant));
+        statusView = text("Stopped", 15, Typeface.DEFAULT_BOLD,
+                color(com.google.android.material.R.attr.colorOnSurface));
+        statusView.setPadding(dp(18), dp(14), dp(18), dp(14));
+        statusCard.addView(statusView);
+        root.addView(statusCard, matchWrap());
 
-        codeView = text(30, Color.BLACK, Typeface.MONOSPACE);
+        root.addView(label("PAIR CODE", dp(20)));
+
+        MaterialCardView codeCard = card();
+        LinearLayout codeBody = cardBody(codeCard, dp(18));
+        codeView = text("—", 32, Typeface.MONOSPACE,
+                color(com.google.android.material.R.attr.colorOnSurface));
         codeView.setTextIsSelectable(true);
-        codeView.setPadding(0, dp(16), 0, dp(4));
-        root.addView(codeView);
-
-        linkView = text(12, Color.GRAY, Typeface.MONOSPACE);
+        codeView.setLetterSpacing(0.08f);
+        codeBody.addView(codeView);
+        linkView = text("", 12, Typeface.MONOSPACE,
+                color(com.google.android.material.R.attr.colorOnSurfaceVariant));
         linkView.setTextIsSelectable(true);
-        linkView.setPadding(0, 0, 0, dp(10));
-        root.addView(linkView);
+        linkView.setPadding(0, dp(6), 0, dp(10));
+        codeBody.addView(linkView);
 
-        policyView = text(14, Color.BLACK, Typeface.DEFAULT);
-        root.addView(policyView);
+        LinearLayout codeActions = new LinearLayout(this);
+        codeActions.setOrientation(LinearLayout.HORIZONTAL);
+        MaterialButton copy = button("Copy code", false);
+        copy.setOnClickListener(v -> copyCode());
+        codeActions.addView(copy, weight());
+        MaterialButton share = button("Share link", false);
+        share.setOnClickListener(v -> shareCode());
+        codeActions.addView(share, weight());
+        codeBody.addView(codeActions);
+        root.addView(codeCard, matchWrap());
 
-        agentView = text(14, Color.BLACK, Typeface.DEFAULT);
-        root.addView(agentView);
+        LinearLayout controls = new LinearLayout(this);
+        controls.setOrientation(LinearLayout.HORIZONTAL);
+        controls.setPadding(0, dp(8), 0, dp(4));
+        startButton = button("Start", true);
+        startButton.setOnClickListener(v -> startTunnel());
+        controls.addView(startButton, weight());
+        stopButton = button("Stop", false);
+        stopButton.setOnClickListener(v -> stopTunnel());
+        controls.addView(stopButton, weight());
+        root.addView(controls);
 
-        loopback = new CheckBox(this);
+        loopback = new MaterialCheckBox(this);
         loopback.setText("Allow this phone's localhost (ADB / local servers)");
         loopback.setTextSize(14);
-        loopback.setTextColor(Color.BLACK);
+        loopback.setTextColor(color(com.google.android.material.R.attr.colorOnSurfaceVariant));
         loopback.setPadding(0, dp(6), 0, dp(6));
         root.addView(loopback);
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(8), 0, dp(8));
-        startButton = button("Start");
-        startButton.setOnClickListener(v -> startTunnel());
-        row.addView(startButton, weight());
-        stopButton = button("Stop");
-        stopButton.setOnClickListener(v -> stopTunnel());
-        row.addView(stopButton, weight());
-        Button copy = button("Copy code");
-        copy.setOnClickListener(v -> copyCode());
-        row.addView(copy, weight());
-        Button share = button("Share");
-        share.setOnClickListener(v -> shareCode());
-        row.addView(share, weight());
-        root.addView(row);
+        root.addView(label("PHONE NETWORK", dp(20)));
+        MaterialCardView networkCard = card();
+        LinearLayout networkBody = cardBody(networkCard, dp(18));
+        policyView = text("No LAN shared", 14, Typeface.DEFAULT,
+                color(com.google.android.material.R.attr.colorOnSurface));
+        networkBody.addView(policyView);
+        agentView = text("Agent: not connected", 14, Typeface.DEFAULT,
+                color(com.google.android.material.R.attr.colorOnSurfaceVariant));
+        agentView.setPadding(0, dp(6), 0, 0);
+        networkBody.addView(agentView);
+        root.addView(networkCard, matchWrap());
 
-        errorView = text(14, Color.rgb(160, 0, 0), Typeface.DEFAULT_BOLD);
-        errorView.setPadding(0, dp(4), 0, dp(8));
+        errorView = text("", 14, Typeface.DEFAULT_BOLD,
+                color(com.google.android.material.R.attr.colorError));
+        errorView.setPadding(0, dp(10), 0, 0);
         root.addView(errorView);
 
-        TextView servicesTitle = text(18, Color.BLACK, Typeface.DEFAULT_BOLD);
-        servicesTitle.setText("Agent services");
-        servicesTitle.setPadding(0, dp(12), 0, dp(6));
-        root.addView(servicesTitle);
-
+        root.addView(label("AGENT SERVICES", dp(20)));
         servicesBox = new LinearLayout(this);
         servicesBox.setOrientation(LinearLayout.VERTICAL);
         root.addView(servicesBox);
 
-        TextView footer = text(12, Color.GRAY, Typeface.DEFAULT);
-        footer.setText("Only the traffic you explicitly send through Tailconnect uses the tunnel. "
-                + "Android's VPN slot is untouched.");
-        footer.setPadding(0, dp(20), 0, dp(8));
+        TextView footer = text("Only the traffic you explicitly send through Tailconnect uses the tunnel. "
+                        + "Android's VPN slot is untouched.",
+                12, Typeface.DEFAULT, color(com.google.android.material.R.attr.colorOnSurfaceVariant));
+        footer.setPadding(0, dp(28), 0, 0);
         root.addView(footer);
 
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(Color.WHITE);
+        scroll.setFillViewport(true);
+        scroll.setBackgroundColor(color(com.google.android.material.R.attr.colorSurface));
         scroll.addView(root);
         return scroll;
     }
 
-    private TextView text(int sp, int color, Typeface face) {
+    private TextView label(String text, int topPadding) {
+        TextView v = text(text, 11, Typeface.DEFAULT_BOLD,
+                color(com.google.android.material.R.attr.colorPrimary));
+        v.setLetterSpacing(0.14f);
+        v.setPadding(0, topPadding, 0, dp(8));
+        return v;
+    }
+
+    private TextView text(String value, int sp, Typeface face, int color) {
         TextView v = new TextView(this);
+        v.setText(value);
         v.setTextSize(sp);
         v.setTextColor(color);
         v.setTypeface(face);
         return v;
     }
 
-    private Button button(String label) {
-        Button b = new Button(this);
-        b.setText(label);
+    private MaterialCardView card() {
+        MaterialCardView c = new MaterialCardView(this);
+        styleCard(c);
+        return c;
+    }
+
+    private void styleCard(MaterialCardView c) {
+        c.setCardBackgroundColor(color(com.google.android.material.R.attr.colorSurfaceVariant));
+        c.setStrokeColor(color(com.google.android.material.R.attr.colorOutline));
+        c.setStrokeWidth(dp(1));
+        c.setRadius(dp(22));
+        c.setCardElevation(0);
+    }
+
+    private LinearLayout cardBody(MaterialCardView card, int pad) {
+        LinearLayout body = new LinearLayout(this);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(pad, pad, pad, pad);
+        card.addView(body, matchWrap());
+        return body;
+    }
+
+    private MaterialButton button(String text, boolean filled) {
+        MaterialButton b = new MaterialButton(this);
+        b.setText(text);
         b.setAllCaps(false);
+        b.setCornerRadius(dp(18));
+        b.setInsetTop(0);
+        b.setInsetBottom(0);
+        b.setTextSize(14);
+        if (filled) {
+            b.setBackgroundTintList(ColorStateList.valueOf(color(com.google.android.material.R.attr.colorPrimary)));
+            b.setTextColor(color(com.google.android.material.R.attr.colorOnPrimary));
+            b.setStrokeWidth(0);
+        } else {
+            b.setBackgroundTintList(ColorStateList.valueOf(Color.TRANSPARENT));
+            b.setTextColor(color(com.google.android.material.R.attr.colorPrimary));
+            b.setStrokeColor(ColorStateList.valueOf(color(com.google.android.material.R.attr.colorOutline)));
+            b.setStrokeWidth(dp(1));
+        }
         return b;
+    }
+
+    private LinearLayout.LayoutParams matchWrap() {
+        return new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
     }
 
     private LinearLayout.LayoutParams weight() {
@@ -166,6 +240,15 @@ public class MainActivity extends Activity implements TailconnectState.Listener 
 
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private int color(int attr) {
+        TypedValue tv = new TypedValue();
+        if (getTheme().resolveAttribute(attr, tv, true)) {
+            if (tv.resourceId != 0) return getResources().getColor(tv.resourceId, getTheme());
+            return tv.data;
+        }
+        return Color.WHITE;
     }
 
     private void startTunnel() {
@@ -206,10 +289,13 @@ public class MainActivity extends Activity implements TailconnectState.Listener 
     }
 
     private void render(TailconnectState.Snapshot s) {
-        statusView.setText(s.running
-                ? (s.agentConnected ? "Connected" : "Waiting for agent")
-                : "Stopped");
-        statusView.setTextColor(s.running ? Color.rgb(0, 120, 60) : Color.DKGRAY);
+        statusView.setText(s.running ? (s.agentConnected ? "Connected" : "Waiting for agent") : "Stopped");
+        statusView.setTextColor(color(s.running
+                ? com.google.android.material.R.attr.colorOnPrimaryContainer
+                : com.google.android.material.R.attr.colorOnSurface));
+        statusCard.setCardBackgroundColor(color(s.running
+                ? com.google.android.material.R.attr.colorPrimaryContainer
+                : com.google.android.material.R.attr.colorSurfaceVariant));
         codeView.setText(s.code.isEmpty() ? "—" : s.code);
         linkView.setText(s.link);
         policyView.setText(s.policy.isEmpty() ? "Shared network: none" : "Shared network: " + s.policy);
@@ -235,17 +321,23 @@ public class MainActivity extends Activity implements TailconnectState.Listener 
     private void renderServices(List<TailconnectState.Service> services) {
         servicesBox.removeAllViews();
         if (services.isEmpty()) {
-            TextView none = text(14, Color.GRAY, Typeface.DEFAULT);
-            none.setText("No services offered yet.");
+            TextView none = text("No services offered yet.", 14, Typeface.DEFAULT,
+                    color(com.google.android.material.R.attr.colorOnSurfaceVariant));
             servicesBox.addView(none);
             return;
         }
         for (TailconnectState.Service svc : services) {
-            TextView label = text(15, Color.BLACK, Typeface.DEFAULT_BOLD);
-            label.setText(svc.label.isEmpty() ? svc.id : svc.label);
-            servicesBox.addView(label);
-            Button open = button("Open " + svc.url);
-            open.setAllCaps(false);
+            MaterialCardView card = card();
+            LinearLayout body = cardBody(card, dp(16));
+            TextView label = text(svc.label.isEmpty() ? svc.id : svc.label, 16, Typeface.DEFAULT_BOLD,
+                    color(com.google.android.material.R.attr.colorOnSurface));
+            body.addView(label);
+            TextView url = text(svc.url, 12, Typeface.MONOSPACE,
+                    color(com.google.android.material.R.attr.colorOnSurfaceVariant));
+            url.setTextIsSelectable(true);
+            url.setPadding(0, dp(4), 0, dp(10));
+            body.addView(url);
+            MaterialButton open = button("Open in browser", false);
             open.setOnClickListener(v -> {
                 try {
                     startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(svc.url)));
@@ -253,7 +345,10 @@ public class MainActivity extends Activity implements TailconnectState.Listener 
                     Toast.makeText(this, "No browser for " + svc.url, Toast.LENGTH_SHORT).show();
                 }
             });
-            servicesBox.addView(open);
+            body.addView(open, matchWrap());
+            LinearLayout.LayoutParams lp = matchWrap();
+            lp.setMargins(0, dp(4), 0, dp(8));
+            servicesBox.addView(card, lp);
         }
     }
 }

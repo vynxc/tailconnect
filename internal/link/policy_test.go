@@ -2,6 +2,7 @@ package link
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -40,5 +41,21 @@ func TestPolicyLoopbackOptIn(t *testing.T) {
 	}
 	if p.Allowed(netip.MustParseAddrPort("192.168.1.1:80")) {
 		t.Fatal("unlisted LAN allowed")
+	}
+}
+
+func TestReadContextInput(t *testing.T) {
+	s := &Server{}
+	in := `{"type":"discovery","adb":[{"name":"adb","host":"192.168.4.50","port":5555,"pairing":false}],"mdns":[{"name":"TV","type":"_googlecast._tcp","host":"192.168.4.60","port":8009}]}`
+	if err := s.ReadContextInput(strings.NewReader(in)); err != nil {
+		t.Fatal(err)
+	}
+	s.ctxMu.Lock()
+	defer s.ctxMu.Unlock()
+	if len(s.discoveryADB) != 1 || s.discoveryADB[0].Port != 5555 {
+		t.Fatalf("adb %+v", s.discoveryADB)
+	}
+	if len(s.discoveryMDNS) != 1 || s.discoveryMDNS[0].Name != "TV" {
+		t.Fatalf("mdns %+v", s.discoveryMDNS)
 	}
 }
