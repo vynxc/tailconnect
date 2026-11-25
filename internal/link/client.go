@@ -348,11 +348,19 @@ func (c *Client) serveAgentStream(stream *smux.Stream) {
 }
 
 func (c *Client) watchPath(tc *tailcat.Client) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-c.ctx.Done():
 			return
-		case <-time.After(5 * time.Second):
+		case <-ticker.C:
+		}
+		c.mu.Lock()
+		current := c.tc
+		c.mu.Unlock()
+		if current != tc {
+			return
 		}
 		ctx, cancel := context.WithTimeout(c.ctx, 3*time.Second)
 		pong, err := tc.DiscoPing(ctx)

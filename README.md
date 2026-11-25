@@ -205,6 +205,7 @@ cgo/external linking for Android/amd64.
 ```bash
 make test
 go vet ./...
+./scripts/e2e-local.sh   # uses official Tailcat DERP; needs network
 ```
 
 Requirements:
