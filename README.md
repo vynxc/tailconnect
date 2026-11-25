@@ -1,5 +1,7 @@
 # Tailconnect
 
+[![CI](https://github.com/vynxc/tailconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/vynxc/tailconnect/actions/workflows/ci.yml)
+
 Tailconnect pairs an Android phone with an agent over a **serverless Tailcat tunnel**. It is deliberately **not a VPN**:
 
 - no `VpnService`
