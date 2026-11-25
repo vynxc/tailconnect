@@ -9,6 +9,8 @@ Third-party components used at runtime:
 - github.com/tailscale/tailcat — BSD-3-Clause, Tailscale Inc.
 - github.com/xtaci/smux — MIT.
 - golang.org/x/crypto/argon2 — BSD-3-Clause, The Go Authors.
+- AndroidX AppCompat — Apache-2.0, The Android Open Source Project.
+- Material Components for Android — Apache-2.0, Google LLC.
 
 Design inspiration:
 
