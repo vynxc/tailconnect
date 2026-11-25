@@ -21,7 +21,7 @@ import (
 	"github.com/vynxc/tailconnect/internal/paircode"
 )
 
-const version = "0.1.0-dev"
+const version = "0.1.0"
 
 func main() {
 	log.SetFlags(0)
