@@ -15,6 +15,77 @@ The phone is the Tailcat server. The agent is the Tailcat client. One code gives
 - **Agent → phone LAN:** the agent can reach TVs, routers, NAS boxes, wireless-debugging ports, and other devices on the phone's current Wi-Fi/Ethernet network.
 - **Phone → agent services:** the agent can publish local or LAN services back to the phone as `http://localhost:<port>` bookmarks.
 
+
+## Install
+
+### 1. Install the Android app
+
+Download the latest signed APK:
+
+<https://github.com/vynxc/tailconnect/releases/latest>
+
+```bash
+adb install -r Tailconnect-0.3.0.apk
+```
+
+Open **Tailconnect**, grant notifications, and tap **Start**. The app shows a
+13-character code. **Keep this code across restarts** is on by default; use
+**Rotate** if you ever need a new one.
+
+### 2. Install the CLI on the agent
+
+With Go:
+
+```bash
+go install github.com/vynxc/tailconnect/cmd/tailconnect@latest
+export PATH="$PATH:$(go env GOPATH)/bin"
+tailconnect version
+```
+
+Or download the matching `tailconnect-*` binary from the release page and put it
+on `PATH`.
+
+### 3. Install the agent skill
+
+No npm package is needed. `skills.sh` reads this GitHub repo directly; there is
+no package for you to publish.
+
+```bash
+npx skills add vynxc/tailconnect --skill tailconnect -g -a opencode -a claude-code -y
+```
+
+Preview without installing:
+
+```bash
+npx skills add vynxc/tailconnect --list
+```
+
+Omit `-g` for a project-local install. `npx` needs Node.js 22.20 or newer.
+
+If you do not want to use Node, copy the skill manually:
+
+```bash
+mkdir -p ~/.config/opencode/skills/tailconnect
+curl -fsSL https://raw.githubusercontent.com/vynxc/tailconnect/main/skills/tailconnect/SKILL.md \
+  -o ~/.config/opencode/skills/tailconnect/SKILL.md
+```
+
+For Claude Code, use `~/.claude/skills/tailconnect/SKILL.md` instead.
+
+### 4. Pair
+
+```bash
+tailconnect save ABCD-EFGH-JKMNP
+tailconnect agent --name workstation --socks 127.0.0.1:1080
+```
+
+The agent prints the phone network, discovered devices, wireless-debugging
+commands, and any services the phone can open.
+
+That is the whole install. No account, no control server, no VPN.
+
+## Architecture
+
 ```text
 Phone (Android)                              Agent machine
 ┌──────────────────────────────────┐         ┌──────────────────────────────────┐
@@ -264,6 +335,29 @@ cgo/external linking for Android/amd64.
   disappears from the official map, rotate the code.
 - OpenTailcat was used as an architectural reference for Android/Tailcat
   integration, but no VPN code is included.
+
+## Troubleshooting
+
+**No code in the app**  
+Tap **Start** and wait for the server to pick a DERP region. If it errors, check
+network connectivity and try **Rotate**.
+
+**Agent cannot connect**  
+Make sure the phone service is running, the code is current, and the agent can
+reach official Tailcat DERP. If the phone used **Rotate**, update the saved agent
+code with `tailconnect save`.
+
+**No LAN devices**  
+The phone must be on Wi-Fi or Ethernet. Cellular has no LAN to share. Check the
+app's **Shared network** line; it should show the phone's IPv4 prefix.
+
+**ADB is not auto-forwarded**  
+Enable **Wireless debugging** on the target phone. mDNS can miss on some devices;
+use the manual `--forward` commands in the skill.
+
+**Skill not found by the agent**  
+Preview with `npx skills add vynxc/tailconnect --list`, then install globally
+with `-g` or copy `skills/tailconnect/SKILL.md` into your agent's skills folder.
 
 ## Development
 
