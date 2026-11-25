@@ -35,4 +35,5 @@ android-apk: android-bin
 
 clean:
 	rm -rf bin
+	rm -rf android/app/src/main/jniLibs
 	rm -rf android/app/build android/build android/.gradle
